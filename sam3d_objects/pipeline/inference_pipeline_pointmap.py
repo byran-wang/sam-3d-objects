@@ -343,6 +343,7 @@ class InferencePipelinePointMap(InferencePipeline):
             "translation": revised_t,
             "scale": revised_scale,
             "iou": final_iou,
+            "intrinsics": intrinsics,
         }
 
     @torch.autograd.grad_mode.inference_mode(mode=False)
@@ -380,6 +381,7 @@ class InferencePipelinePointMap(InferencePipeline):
             "iou": final_iou,
             "iou_before_optim": initial_iou,
             "optim_accepted": flag_optim,
+            "intrinsics": intrinsics,
         }
 
     def run(
@@ -500,6 +502,10 @@ class InferencePipelinePointMap(InferencePipeline):
                 )
 
             logger.info("Finished!")
+
+            # Include intrinsics in output (use optimized if available, otherwise original)
+            if "intrinsics" not in ss_return_dict:
+                ss_return_dict["intrinsics"] = pointmap_dict["intrinsics"]
 
             return {
                 **ss_return_dict,

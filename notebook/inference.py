@@ -378,7 +378,7 @@ def load_masks(folder_path, indices_list=None, extension=".png"):
     return masks
 
 
-def display_image(image, masks=None):
+def display_image(image, masks=None, output_path=None):
     def imshow(image, ax):
         ax.axis("off")
         ax.imshow(image)
@@ -401,8 +401,10 @@ def display_image(image, masks=None):
     imshow(image, image_axe)
 
     fig.tight_layout(pad=0)
+    if output_path is not None:
+        fig.savefig(output_path)
+        return
     fig.show()
-
 
 def interactive_visualizer(ply_path):
     with gr.Blocks() as demo:
