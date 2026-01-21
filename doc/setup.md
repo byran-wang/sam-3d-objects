@@ -14,6 +14,15 @@ The following will install the default environment. If you use `conda` instead o
 mamba env create -f environments/default.yml
 mamba activate sam3d-objects
 
+# install the cuda toolkit
+wget https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda_12.1.0_530.30.02_linux.run
+chmod +x cuda_12.1.0_530.30.02_linux.run
+sudo bash ./cuda_12.1.0_530.30.02_linux.run --toolkit --silent --override
+
+export PATH="/usr/local/cuda-12.1:/usr/local/cuda-12.1/bin/:$PATH"
+export CUDA_PATH='/usr/local/cuda-12.1'
+export LD_LIBRARY_PATH="/usr/local/cuda-12.1/lib64:$LD_LIBRARY_PATH"
+
 # for pytorch/cuda dependencies
 export PIP_EXTRA_INDEX_URL="https://pypi.ngc.nvidia.com https://download.pytorch.org/whl/cu121"
 
