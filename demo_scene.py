@@ -88,6 +88,19 @@ def visualize_in_rerun(image, output_glb_path, meta_data):
             ),
         )
 
+        # Log point cloud with blue color (random sample for performance)
+        num_points = min(500000, len(scene_mesh.vertices))
+        indices = np.random.choice(len(scene_mesh.vertices), num_points, replace=False)
+        sampled_vertices = scene_mesh.vertices[indices]
+        rr.log(
+            "world/scene_pc",
+            rr.Points3D(
+                positions=sampled_vertices,
+                colors=np.full((num_points, 3), [0, 100, 255], dtype=np.uint8),
+                radii=0.001,
+            ),
+        )
+
     print("Rerun visualization started. Check your browser or rerun viewer.")
 
 def make_scene_untextured_mesh(*outputs, in_place=False):
