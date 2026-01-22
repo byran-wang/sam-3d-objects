@@ -136,6 +136,39 @@ def make_scene_untextured_mesh(*outputs, in_place=False):
 
     return trimesh.util.concatenate(all_meshes)
 
+def make_scene_untextured_mesh_without_transform(*outputs, in_place=False):
+    import trimesh
+
+    if not in_place:
+        outputs = [deepcopy(output) for output in outputs]
+
+    all_meshes = []
+    for output in outputs:
+        mesh = output["glb"]
+        if mesh is None:
+            continue
+
+        # # GLB is Y-up, transforms are Z-up; convert, apply, convert back
+        # vertices = mesh.vertices.astype(np.float32) @ _R_YUP_TO_ZUP
+        # vertices_tensor = torch.from_numpy(vertices).float().to(output["rotation"].device)
+        # R_l2c = quaternion_to_matrix(output["rotation"])
+        # l2c_transform = compose_transform(
+        #     scale=output["scale"],
+        #     rotation=R_l2c,
+        #     translation=output["translation"],
+        # )
+        # vertices = l2c_transform.transform_points(vertices_tensor.unsqueeze(0))
+        # mesh.vertices = (vertices.squeeze(0).cpu().numpy() @ _R_ZUP_TO_YUP) @ _GL_TO_CV
+        all_meshes.append(mesh)
+
+    if not all_meshes:
+        return None
+
+    if len(all_meshes) == 1:
+        return all_meshes[0]
+
+    return trimesh.util.concatenate(all_meshes)
+
 def load_outputs_from_npz(npz_path):
     """Load outputs from saved npz file, reconstructing the list of dicts."""
     data = np.load(npz_path)
