@@ -114,18 +114,19 @@ def make_scene_untextured_mesh(*outputs, in_place=False):
         mesh = output["glb"]
         if mesh is None:
             continue
-
         # GLB is Y-up, transforms are Z-up; convert, apply, convert back
-        vertices = mesh.vertices.astype(np.float32) @ _R_YUP_TO_ZUP
-        vertices_tensor = torch.from_numpy(vertices).float().to(output["rotation"].device)
         R_l2c = quaternion_to_matrix(output["rotation"])
         l2c_transform = compose_transform(
             scale=output["scale"],
             rotation=R_l2c,
             translation=output["translation"],
         )
-        vertices = l2c_transform.transform_points(vertices_tensor.unsqueeze(0))
-        mesh.vertices = (vertices.squeeze(0).cpu().numpy() @ _R_ZUP_TO_YUP) @ _GL_TO_CV
+        # Get the 4x4 transformation matrix and apply from left
+        transform_matrix = l2c_transform.get_matrix()[0].cpu().numpy().T  # (4, 4), transpose for left multiply
+        # Add homogeneous coordinate
+        vertices_h = np.hstack([mesh.vertices, np.ones((len(mesh.vertices), 1))])  # (N, 4)
+        o2c = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
+        mesh.vertices = (o2c @ vertices_h.T).T[:, :3]
         all_meshes.append(mesh)
 
     if not all_meshes:
