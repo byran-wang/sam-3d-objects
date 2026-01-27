@@ -10,9 +10,9 @@ from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
 # import inference code
 sys.path.append("notebook")
 
-_R_ZUP_TO_YUP = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float32)
+_R_ZUP_TO_YUP = np.array([[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.float32)
 _R_YUP_TO_ZUP = _R_ZUP_TO_YUP.T
-_GL_TO_CV = np.array([[-1, 0, 0], [0, 0, 1], [0, 1, 0]], dtype=np.float32)
+_GL_TO_CV = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.float32)
 
 
 def visualize_in_rerun(image, output_glb_path, meta_data):
@@ -55,6 +55,7 @@ def visualize_in_rerun(image, output_glb_path, meta_data):
                 principal_point=[cx, cy],
                 resolution=[width, height],
                 camera_xyz=rr.ViewCoordinates.RDF,  # Right-Down-Forward (OpenCV convention)
+                image_plane_distance=3.0,
             ),
         )
 
@@ -68,6 +69,7 @@ def visualize_in_rerun(image, output_glb_path, meta_data):
 
 
     if os.path.exists(output_glb_path):
+
         loaded = trimesh.load(output_glb_path)
         # Handle both Scene and Trimesh objects
         if isinstance(loaded, trimesh.Scene):
@@ -79,6 +81,42 @@ def visualize_in_rerun(image, output_glb_path, meta_data):
             scene_colors = scene_mesh.visual.vertex_colors[:, :3]
         else:
             scene_colors = None
+        if 0:
+            scene_mesh.vertices = scene_mesh.vertices.astype(np.float32) @ _R_YUP_TO_ZUP
+            meta_data = meta_data[0]  # Use first output's metadata for camera transform
+            R_l2c = quaternion_to_matrix(meta_data["rotation"])
+            l2c_transform = compose_transform(
+                scale=meta_data["scale"],
+                rotation=R_l2c,
+                translation=meta_data["translation"],
+            )
+            # Convert to tensor for pytorch3d transform, then back to numpy
+            vertices_tensor = torch.from_numpy(scene_mesh.vertices).float().to(meta_data["rotation"].device)
+            transformed = l2c_transform.transform_points(vertices_tensor)
+            scene_mesh.vertices = (transformed.cpu().numpy() @ _R_ZUP_TO_YUP) @ _GL_TO_CV
+
+        elif 1:
+            breakpoint()
+            # scene_mesh.vertices = scene_mesh.vertices.astype(np.float32) @ _R_YUP_TO_ZUP
+            # scene_mesh.vertices = (_R_YUP_TO_ZUP.T @ scene_mesh.vertices.T).T
+            # _R_YUP_TO_ZUP.T = np.array([[ 1.,  0.,  0.],
+            #                         [ 0.,  0., -1.],
+            #                         [ 0.,  1.,  0.]])
+            meta_data = meta_data[0]  # Use first output's metadata for camera transform
+            R_l2c = quaternion_to_matrix(meta_data["rotation"])
+            l2c_transform = compose_transform(
+                scale=meta_data["scale"],
+                rotation=R_l2c,
+                translation=meta_data["translation"],
+            )
+            # Get the 4x4 transformation matrix and apply from left
+            transform_matrix = l2c_transform.get_matrix()[0].cpu().numpy().T  # (4, 4), transpose for left multiply
+            # Add homogeneous coordinate
+            vertices_h = np.hstack([scene_mesh.vertices, np.ones((len(scene_mesh.vertices), 1))])  # (N, 4)
+            o2c = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
+            scene_mesh.vertices = (o2c @ vertices_h.T).T[:, :3]
+        else:
+            pass
         rr.log(
             "world/scene_mesh",
             rr.Mesh3D(
@@ -224,7 +262,7 @@ def main():
     # load masks
     masks = load_masks(args.masks_dir)
     if args.num_masks is not None:
-        masks = masks[:args.num_masks]
+        masks = masks[14:15]
     
     os.makedirs(os.path.dirname(args.output_scene) or ".", exist_ok=True)
     display_image(image, masks, output_path=os.path.join(os.path.dirname(args.output_scene), "inputs.png"))
@@ -254,7 +292,7 @@ def main():
 
     # visualize after inference if requested
     if args.vis:
-        visualize_in_rerun(image, args.meta_data, args.output_scene)
+        visualize_in_rerun(image, args.output_scene, meta_data)
 
 
 if __name__ == "__main__":
