@@ -15,7 +15,7 @@ _R_YUP_TO_ZUP = _R_ZUP_TO_YUP.T
 _GL_TO_CV = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.float32)
 
 
-def visualize_in_rerun(image, output_glb_path, meta_data):
+def visualize_in_rerun(image, meta_data, output_glb_path=None):
     """Visualize image, camera, poses and meshes in rerun."""
     import rerun as rr
     import rerun.blueprint as rrb
@@ -67,69 +67,75 @@ def visualize_in_rerun(image, output_glb_path, meta_data):
         # Fallback: just log the image without camera model
         rr.log("world/image", rr.Image(image[..., :3]))
 
+    # Get meshes - either from metadata or from GLB file
+    meshes = []
+    for obj_meta in meta_data:
+        mesh = obj_meta.get("glb")
+        if mesh is not None:
+            meshes.append(mesh)
 
-    if os.path.exists(output_glb_path):
-
+    # If no meshes in metadata, load from GLB file
+    if not meshes and output_glb_path and os.path.exists(output_glb_path):
         loaded = trimesh.load(output_glb_path)
-        # Handle both Scene and Trimesh objects
         if isinstance(loaded, trimesh.Scene):
-            scene_mesh = loaded.dump(concatenate=True)
+            meshes = list(loaded.geometry.values())
         else:
-            scene_mesh = loaded
+            meshes = [loaded]
 
-        if hasattr(scene_mesh, 'visual') and hasattr(scene_mesh.visual, 'vertex_colors') and scene_mesh.visual.vertex_colors is not None:
-            scene_colors = scene_mesh.visual.vertex_colors[:, :3]
-        else:
-            scene_colors = None
-        if 0:
-            scene_mesh.vertices = scene_mesh.vertices.astype(np.float32) @ _R_YUP_TO_ZUP
-            meta_data = meta_data[0]  # Use first output's metadata for camera transform
-            R_l2c = quaternion_to_matrix(meta_data["rotation"])
-            l2c_transform = compose_transform(
-                scale=meta_data["scale"],
-                rotation=R_l2c,
-                translation=meta_data["translation"],
-            )
-            # Convert to tensor for pytorch3d transform, then back to numpy
-            vertices_tensor = torch.from_numpy(scene_mesh.vertices).float().to(meta_data["rotation"].device)
-            transformed = l2c_transform.transform_points(vertices_tensor)
-            scene_mesh.vertices = (transformed.cpu().numpy() @ _R_ZUP_TO_YUP) @ _GL_TO_CV
+    # Transform each mesh with its corresponding metadata
+    all_vertices = []
+    all_faces = []
+    all_colors = []
+    vertex_offset = 0
 
-        elif 1:
-            breakpoint()
-            # scene_mesh.vertices = scene_mesh.vertices.astype(np.float32) @ _R_YUP_TO_ZUP
-            # scene_mesh.vertices = (_R_YUP_TO_ZUP.T @ scene_mesh.vertices.T).T
-            # _R_YUP_TO_ZUP.T = np.array([[ 1.,  0.,  0.],
-            #                         [ 0.,  0., -1.],
-            #                         [ 0.,  1.,  0.]])
-            meta_data = meta_data[0]  # Use first output's metadata for camera transform
-            R_l2c = quaternion_to_matrix(meta_data["rotation"])
-            l2c_transform = compose_transform(
-                scale=meta_data["scale"],
-                rotation=R_l2c,
-                translation=meta_data["translation"],
-            )
-            # Get the 4x4 transformation matrix and apply from left
-            transform_matrix = l2c_transform.get_matrix()[0].cpu().numpy().T  # (4, 4), transpose for left multiply
-            # Add homogeneous coordinate
-            vertices_h = np.hstack([scene_mesh.vertices, np.ones((len(scene_mesh.vertices), 1))])  # (N, 4)
-            o2c = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
-            scene_mesh.vertices = (o2c @ vertices_h.T).T[:, :3]
+    for i, mesh in enumerate(meshes):
+        if i >= len(meta_data):
+            break
+
+        obj_meta = meta_data[i]
+        R_l2c = quaternion_to_matrix(obj_meta["rotation"])
+        l2c_transform = compose_transform(
+            scale=obj_meta["scale"],
+            rotation=R_l2c,
+            translation=obj_meta["translation"],
+        )
+
+        # Get the 4x4 transformation matrix and apply from left
+        transform_matrix = l2c_transform.get_matrix()[0].cpu().numpy().T
+        # Add homogeneous coordinate
+        vertices_h = np.hstack([mesh.vertices, np.ones((len(mesh.vertices), 1))])
+        o2c = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
+        transformed_vertices = (o2c @ vertices_h.T).T[:, :3]
+
+        # Collect vertices, faces (with offset), and colors
+        all_vertices.append(transformed_vertices)
+        all_faces.append(mesh.faces + vertex_offset)
+        vertex_offset += len(mesh.vertices)
+
+        if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+            all_colors.append(mesh.visual.vertex_colors[:, :3])
         else:
-            pass
+            all_colors.append(np.full((len(mesh.vertices), 3), 128, dtype=np.uint8))
+
+    if all_vertices:
+        # Combine all meshes
+        combined_vertices = np.vstack(all_vertices)
+        combined_faces = np.vstack(all_faces)
+        combined_colors = np.vstack(all_colors)
+
         rr.log(
             "world/scene_mesh",
             rr.Mesh3D(
-                vertex_positions=scene_mesh.vertices,
-                triangle_indices=scene_mesh.faces,
-                vertex_colors=scene_colors,
+                vertex_positions=combined_vertices,
+                triangle_indices=combined_faces,
+                vertex_colors=combined_colors,
             ),
         )
 
         # Log point cloud with blue color (random sample for performance)
-        num_points = min(500000, len(scene_mesh.vertices))
-        indices = np.random.choice(len(scene_mesh.vertices), num_points, replace=False)
-        sampled_vertices = scene_mesh.vertices[indices]
+        num_points = min(50000, len(combined_vertices))
+        indices = np.random.choice(len(combined_vertices), num_points, replace=False)
+        sampled_vertices = combined_vertices[indices]
         rr.log(
             "world/scene_pc",
             rr.Points3D(
@@ -253,7 +259,7 @@ def main():
     # visualize mode: load from saved outputs if available
     if args.vis and args.meta_data and os.path.exists(args.meta_data):
         meta_data = load_outputs_from_npz(args.meta_data)
-        visualize_in_rerun(image, args.output_scene, meta_data)
+        visualize_in_rerun(image, meta_data, args.output_scene.replace(".glb", "_without_transform.glb"))
         return
 
 
@@ -262,7 +268,7 @@ def main():
     # load masks
     masks = load_masks(args.masks_dir)
     if args.num_masks is not None:
-        masks = masks[14:15]
+        masks = masks[: args.num_masks]
     
     os.makedirs(os.path.dirname(args.output_scene) or ".", exist_ok=True)
     display_image(image, masks, output_path=os.path.join(os.path.dirname(args.output_scene), "inputs.png"))
@@ -287,12 +293,14 @@ def main():
 
     scene_mesh = make_scene_untextured_mesh(*outputs)
     scene_mesh.export(args.output_scene)
+    scene_mesh_without_transform = make_scene_untextured_mesh_without_transform(*outputs)
+    scene_mesh_without_transform.export(args.output_scene.replace(".glb", "_without_transform.glb"))    
 
     print(f"Your scene reconstruction has been saved to {args.output_scene}")
 
     # visualize after inference if requested
     if args.vis:
-        visualize_in_rerun(image, args.output_scene, meta_data)
+        visualize_in_rerun(image, outputs, args.output_scene.replace(".glb", "_without_transform.glb"))
 
 
 if __name__ == "__main__":
