@@ -76,8 +76,16 @@ def _load_and_transform_mesh(
     )
 
 
-def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path):
-    """Visualize input image, masked image, camera intrinsics, and mesh in rerun."""
+def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path, pointmap=None):
+    """Visualize input image, masked image, camera intrinsics, mesh, and pointmap in rerun.
+
+    Args:
+        image: Input RGB(A) image
+        mask: Object mask
+        camera_json_path: Path to camera.json with K and o2c
+        scene_glb_path: Path to scene.glb mesh file
+        pointmap: Optional pointmap tensor/array of shape (H, W, 3) in camera space
+    """
     import rerun as rr
     import rerun.blueprint as rrb
 
@@ -118,6 +126,47 @@ def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path):
     masked_rgb = image[..., :3].copy()
     masked_rgb[~mask.astype(bool)] = 0
     rr.log("world/camera/masked_image", rr.Image(masked_rgb))
+
+    # --- Log Masked Pointmap ---
+    if pointmap is not None:
+        # Convert to numpy if torch tensor
+        if hasattr(pointmap, 'cpu'):
+            pointmap_np = pointmap.cpu().numpy()
+        else:
+            pointmap_np = pointmap
+
+        # Ensure shape is (H, W, 3)
+        if pointmap_np.shape[0] == 3:
+            pointmap_np = pointmap_np.transpose(1, 2, 0)
+
+        # Apply mask to get object points
+        mask_bool = mask.astype(bool)
+        masked_points = pointmap_np[mask_bool]
+
+        # Filter out invalid points (nan, inf)
+        valid_mask = np.isfinite(masked_points).all(axis=1)
+        masked_points = masked_points[valid_mask]
+
+        # Get corresponding colors from image
+        masked_colors = image[..., :3][mask_bool][valid_mask]
+
+        if len(masked_points) > 0:
+            # Subsample if too many points
+            max_points = 100000
+            if len(masked_points) > max_points:
+                indices = np.random.choice(len(masked_points), max_points, replace=False)
+                masked_points = masked_points[indices]
+                masked_colors = masked_colors[indices]
+
+            rr.log(
+                "world/pointmap",
+                rr.Points3D(
+                    positions=masked_points,
+                    colors=masked_colors,
+                    radii=0.002,
+                ),
+            )
+            print(f"Logged {len(masked_points)} pointmap points")
 
     # --- Log Mesh and Point Cloud ---
     mesh_data = _load_and_transform_mesh(scene_glb_path, o2c)
@@ -286,15 +335,6 @@ def main(args):
     image = load_image(image_path)
     # mask = load_single_mask("notebook/images/shutterstock_stylish_kidsroom_1640806567", index=14)
     mask = load_mask(mask_path)
-    if args.vis:
-        camera_json_path = os.path.join(out_dir, "camera.json")
-        scene_glb_path = os.path.join(out_dir, "scene.glb")
-        if not os.path.exists(camera_json_path) or not os.path.exists(scene_glb_path):
-            print(f"Visualization requires camera.json and scene.glb in {out_dir}.")
-            print("Run without --vis first to generate outputs.")
-            return
-        visualize_in_rerun(image, mask, camera_json_path, scene_glb_path)
-        return
 
     # Load pointmap from depth if provided
     pointmap = None
@@ -313,6 +353,21 @@ def main(args):
             args.depth_file, args.meta_file
         )
         print(f"Pointmap shape: {pointmap.shape}")
+            
+    if args.vis:
+        camera_json_path = os.path.join(out_dir, "camera.json")
+        scene_glb_path = os.path.join(out_dir, "scene.glb")
+        if not os.path.exists(camera_json_path) or not os.path.exists(scene_glb_path):
+            print(f"Visualization requires camera.json and scene.glb in {out_dir}.")
+            print("Run without --vis first to generate outputs.")
+            return
+        # flip x, y axis of pointmap for visualization
+        if pointmap is not None:
+            pointmap = convert_pointmap_to_pytorch3d(pointmap.numpy())
+        visualize_in_rerun(image, mask, camera_json_path, scene_glb_path, pointmap=pointmap)
+        return
+
+
 
     os.makedirs(out_dir, exist_ok=True)
     save_rgba_with_mask(image, mask, os.path.join(out_dir, "input.png"))
