@@ -320,12 +320,11 @@ class InferencePipelinePointMap(InferencePipeline):
 
         return revised_scale
 
-    def compute_pointmap(self, image, pointmap=None):
+    def compute_pointmap(self, image, pointmap=None, intrinsics=None):
         loaded_image = self.image_to_float(image)
         loaded_image = torch.from_numpy(loaded_image)
         loaded_mask = loaded_image[..., -1]
         loaded_image = loaded_image.permute(2, 0, 1).contiguous()[:3]
-
         if pointmap is None:
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=self.dtype):
@@ -337,15 +336,9 @@ class InferencePipelinePointMap(InferencePipeline):
                 .to(self.device)
             )
             points_tensor = camera_convention_transform.transform_points(pointmaps)
-            intrinsics = output.get("intrinsics", None)
+            if intrinsics is None:
+                intrinsics = output.get("intrinsics", None)
 
-            # debug_path = save_pointmap_ply(
-            #     points_tensor,
-            #     "./debug_pointmap",
-            #     "pointmap_hw3.ply",
-            #     points_are_chw=False,
-            # )
-            # logger.info(f"Saved pointmap debug point cloud to {debug_path}")
         else:
             output = {}
             points_tensor = pointmap.to(self.device)
@@ -357,7 +350,14 @@ class InferencePipelinePointMap(InferencePipeline):
                     size=(loaded_image.shape[1], loaded_image.shape[2]),
                     mode="nearest",
                 ).squeeze(0).permute(1, 2, 0)
-            intrinsics = None
+        
+        debug_path = save_pointmap_ply(
+            points_tensor,
+            "./debug_pointmap",
+            "pointmap_hw3.ply",
+            points_are_chw=False,
+        )
+        logger.info(f"Saved pointmap debug point cloud to {debug_path}")
         
         # Prepare the point map tensor
         point_map_tensor = {
@@ -476,12 +476,13 @@ class InferencePipelinePointMap(InferencePipeline):
         use_stage1_distillation=False,
         use_stage2_distillation=False,
         pointmap=None,
+        intrinsics=None,
         decode_formats=None,
         estimate_plane=False,
     ) -> dict:
         image = self.merge_image_and_mask(image, mask)
-        with self.device: 
-            pointmap_dict = self.compute_pointmap(image, pointmap)
+        with self.device:
+            pointmap_dict = self.compute_pointmap(image, pointmap, intrinsics)
             pointmap = pointmap_dict["pointmap"]
             pts = type(self)._down_sample_img(pointmap)
             pts_colors = type(self)._down_sample_img(pointmap_dict["pts_color"])

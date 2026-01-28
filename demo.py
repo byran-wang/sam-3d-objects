@@ -143,6 +143,31 @@ def load_intrinsics(meta_file):
     return np.array(meta_data["camMat"], dtype=np.float32)
 
 
+def normalize_intrinsics(K, height, width):
+    """Normalize intrinsics to [0, 1] range expected by pipeline."""
+    K_norm = np.array([
+        [K[0, 0] / width, 0, K[0, 2] / width],
+        [0, K[1, 1] / height, K[1, 2] / height],
+        [0, 0, 1]
+    ], dtype=np.float32)
+    return K_norm
+
+
+def load_pointmap_and_intrinsics(depth_file, meta_file):
+    """Load pointmap from depth file and intrinsics from meta file.
+
+    Returns:
+        pointmap: torch.Tensor of shape (H, W, 3)
+        K: original intrinsics matrix (pixel values)
+        K_normalized: normalized intrinsics for pipeline
+    """
+    K = load_intrinsics(meta_file)
+    pointmap = load_pointmap_from_depth(depth_file, K)
+    height, width = pointmap.shape[:2]
+    K_normalized = normalize_intrinsics(K, height, width)
+    return pointmap, K, K_normalized
+
+
 def load_pointmap_from_depth(depth_file, K):
     """Load depth and convert to pointmap using intrinsics K."""
     # Load depth
@@ -180,6 +205,8 @@ def main(args):
 
     # Load pointmap from depth if provided
     pointmap = None
+    K_input = None
+    K_input_normalized = None
     if args.depth_file and args.meta_file:
         if not os.path.exists(args.depth_file):
             print(f"Depth file {args.depth_file} not found.")
@@ -189,8 +216,9 @@ def main(args):
             return
         print(f"Loading pointmap from depth: {args.depth_file}")
         print(f"Using intrinsics from: {args.meta_file}")
-        K_input = load_intrinsics(args.meta_file)
-        pointmap = load_pointmap_from_depth(args.depth_file, K_input)
+        pointmap, K_input, K_input_normalized = load_pointmap_and_intrinsics(
+            args.depth_file, args.meta_file
+        )
         print(f"Pointmap shape: {pointmap.shape}")
 
     os.makedirs(out_dir, exist_ok=True)
@@ -201,7 +229,7 @@ def main(args):
     tag = "hf"
     config_path = f"checkpoints/{tag}/pipeline.yaml"
     inference = Inference(config_path, compile=False)
-    outputs = [inference(image, mask, seed=42, pointmap=pointmap)]
+    outputs = [inference(image, mask, seed=42, pointmap=pointmap, intrinsics=K_input_normalized)]
 
     # Save o2c transforms to out_dir
     assert len(outputs) == 1, "Only single object inference is supported in demo.py"
@@ -215,17 +243,22 @@ def main(args):
     transform_matrix = l2c_transform.get_matrix()[0].cpu().numpy().T
     o2c = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
 
-    # Get intrinsics and denormalize
-    intrinsics = output["intrinsics"]
-    if isinstance(intrinsics, torch.Tensor):
-        intrinsics = intrinsics.cpu().numpy()
-    intrinsics = intrinsics.squeeze()
+    # Get intrinsics: use input K if provided, otherwise denormalize from pipeline output
     height, width = image.shape[:2]
-    fx = intrinsics[0, 0] * width
-    fy = intrinsics[1, 1] * height
-    cx = intrinsics[0, 2] * width
-    cy = intrinsics[1, 2] * height
-    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+    if K_input is not None:
+        K = K_input
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+    else:
+        intrinsics = output["intrinsics"]
+        if isinstance(intrinsics, torch.Tensor):
+            intrinsics = intrinsics.cpu().numpy()
+        intrinsics = intrinsics.squeeze()
+        fx = intrinsics[0, 0] * width
+        fy = intrinsics[1, 1] * height
+        cx = intrinsics[0, 2] * width
+        cy = intrinsics[1, 2] * height
+        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
 
     # Save K and o2c to camera.json
     camera_data = {
