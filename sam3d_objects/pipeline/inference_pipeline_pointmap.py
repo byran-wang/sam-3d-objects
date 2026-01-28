@@ -1,7 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 from typing import Union, Optional
 from copy import deepcopy
+import os
 import numpy as np
+import trimesh
 import torch
 from tqdm import tqdm
 import torchvision
@@ -21,6 +23,61 @@ from sam3d_objects.data.dataset.tdfy.transforms_3d import (
 )
 from sam3d_objects.pipeline.utils.pointmap import infer_intrinsics_from_pointmap
 from sam3d_objects.pipeline.inference_utils import o3d_plane_estimation, estimate_plane_area, layout_post_optimization, layout_post_optimization_method_GS
+
+
+def save_pointmap_ply(points_tensor: torch.Tensor, debug_dir: str, filename: str, *, points_are_chw: bool) -> str:
+    os.makedirs(debug_dir, exist_ok=True)
+    points_np = points_tensor.detach().float().cpu().numpy()
+    if points_are_chw:
+        points_np = points_np.transpose(1, 2, 0)  # HWC
+    points_flat = points_np.reshape(-1, 3)
+    valid = np.isfinite(points_flat).all(axis=1)
+    points_flat = points_flat[valid]
+    debug_path = os.path.join(debug_dir, filename)
+    trimesh.PointCloud(points_flat).export(debug_path)
+    return debug_path
+
+
+def save_debug_pointcloud(
+    pointmap: torch.Tensor,
+    colors: torch.Tensor,
+    path: str,
+    debug_dir: str = "./debug_pointmap",
+) -> None:
+    """Save a point cloud with colors to a PLY file for debugging.
+
+    Args:
+        pointmap: Point positions tensor with shape [1, 3, H, W] or [3, H, W]
+        colors: Color tensor with shape [1, 3, H, W] or [3, H, W]
+        path: Filename for the output PLY file
+        debug_dir: Directory to save the PLY file
+    """
+    os.makedirs(debug_dir, exist_ok=True)
+
+    # Handle batch dimension
+    if pointmap.dim() == 4:
+        pointmap = pointmap[0]
+    if colors.dim() == 4:
+        colors = colors[0]
+
+    # Convert to numpy [H, W, 3]
+    points_hwc = pointmap.detach().cpu().numpy().transpose(1, 2, 0)
+    colors_hwc = colors.detach().cpu().numpy().transpose(1, 2, 0)
+
+    # Flatten to [N, 3]
+    points_flat = points_hwc.reshape(-1, 3)
+    colors_flat = colors_hwc.reshape(-1, 3)
+
+    # Convert colors from [0, 1] float to [0, 255] uint8 if needed
+    if colors_flat.max() <= 1.0:
+        colors_flat = (colors_flat * 255).astype(np.uint8)
+
+    # Filter out invalid points
+    valid_mask = np.isfinite(points_flat).all(axis=1)
+
+    debug_path = os.path.join(debug_dir, path)
+    trimesh.PointCloud(points_flat[valid_mask], colors=colors_flat[valid_mask]).export(debug_path)
+    logger.info(f"Saved debug pointcloud to {debug_path}")
 
 
 def camera_to_pytorch3d_camera(device="cpu") -> DecomposedTransform:
@@ -217,6 +274,10 @@ class InferencePipelinePointMap(InferencePipeline):
             )
             item["rgb_pointmap_unnorm"] = full_pointmap[None].to(self.device)            
 
+            # # Save debug point clouds
+            # save_debug_pointcloud(item["pointmap"], item["rgb_pointmap"], "point_map_processed.ply")
+            # save_debug_pointcloud(item["rgb_pointmap_unnorm"], item["rgb_pointmap"], "point_map_unnorm.ply")
+
         return item
 
     def _clip_pointmap(self, pointmap: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -277,6 +338,14 @@ class InferencePipelinePointMap(InferencePipeline):
             )
             points_tensor = camera_convention_transform.transform_points(pointmaps)
             intrinsics = output.get("intrinsics", None)
+
+            # debug_path = save_pointmap_ply(
+            #     points_tensor,
+            #     "./debug_pointmap",
+            #     "pointmap_hw3.ply",
+            #     points_are_chw=False,
+            # )
+            # logger.info(f"Saved pointmap debug point cloud to {debug_path}")
         else:
             output = {}
             points_tensor = pointmap.to(self.device)
@@ -313,6 +382,14 @@ class InferencePipelinePointMap(InferencePipeline):
         points_tensor = points_tensor.permute(2, 0, 1)
         points_tensor = self._clip_pointmap(points_tensor, loaded_mask)
         point_map_tensor["pointmap"] = points_tensor
+
+        # debug_path = save_pointmap_ply(
+        #     points_tensor,
+        #     "./debug_pointmap",
+        #     "pointmap_hw3_masked.ply",
+        #     points_are_chw=True,
+        # )
+        # logger.info(f"Saved clipped pointmap debug point cloud to {debug_path}")
 
         return point_map_tensor
 
