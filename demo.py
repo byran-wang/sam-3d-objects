@@ -16,19 +16,78 @@ from pytorch3d.renderer import MeshRasterizer, RasterizationSettings, Perspectiv
 from pytorch3d.structures import Meshes
 
 
-def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path):
-    """Visualize input image, masked image, camera intrinsics, and mesh in rerun."""
-    import rerun as rr
-    import rerun.blueprint as rrb
-    import trimesh
-
-    # Load camera data
+def _load_camera_data(camera_json_path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load camera intrinsics (K) and object-to-camera transform (o2c) from JSON."""
     with open(camera_json_path, "r") as f:
         camera_data = json.load(f)
     K = np.array(camera_data["K"], dtype=np.float32)
     o2c = np.array(camera_data["blw2cvc"], dtype=np.float32)
+    return K, o2c
 
-    # Set up blueprint with 3D view and two 2D views side by side
+
+def _load_and_transform_mesh(
+    scene_glb_path: str, o2c: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Load mesh from GLB file and transform vertices to camera space.
+
+    Returns:
+        Tuple of (vertices, faces, colors) or None if file doesn't exist.
+    """
+    import trimesh
+
+    if not os.path.exists(scene_glb_path):
+        return None
+
+    loaded = trimesh.load(scene_glb_path)
+    meshes = list(loaded.geometry.values()) if isinstance(loaded, trimesh.Scene) else [loaded]
+
+    all_vertices = []
+    all_faces = []
+    all_colors = []
+    vertex_offset = 0
+
+    for mesh in meshes:
+        # Transform vertices to camera space
+        vertices_h = np.hstack([mesh.vertices, np.ones((len(mesh.vertices), 1))])
+        transformed_vertices = (o2c @ vertices_h.T).T[:, :3]
+
+        all_vertices.append(transformed_vertices)
+        all_faces.append(mesh.faces + vertex_offset)
+        vertex_offset += len(mesh.vertices)
+
+        # Extract vertex colors or use default gray
+        has_colors = (
+            hasattr(mesh, 'visual')
+            and hasattr(mesh.visual, 'vertex_colors')
+            and mesh.visual.vertex_colors is not None
+        )
+        if has_colors:
+            all_colors.append(mesh.visual.vertex_colors[:, :3])
+        else:
+            all_colors.append(np.full((len(mesh.vertices), 3), 128, dtype=np.uint8))
+
+    if not all_vertices:
+        return None
+
+    return (
+        np.vstack(all_vertices),
+        np.vstack(all_faces),
+        np.vstack(all_colors),
+    )
+
+
+def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path):
+    """Visualize input image, masked image, camera intrinsics, and mesh in rerun."""
+    import rerun as rr
+    import rerun.blueprint as rrb
+
+    # --- Load Data ---
+    K, o2c = _load_camera_data(camera_json_path)
+    height, width = image.shape[:2]
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    # --- Initialize Rerun ---
     blueprint = rrb.Horizontal(
         rrb.Vertical(
             rrb.Spatial2DView(name="Camera Image", origin="/image"),
@@ -37,90 +96,54 @@ def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path):
         rrb.Spatial3DView(name="3D Scene", origin="world"),
         column_shares=[1, 2],
     )
-
     rr.init("sam3d_demo", spawn=True)
     rr.send_blueprint(blueprint)
 
-    # Get image dimensions
-    height, width = image.shape[:2]
-
-    # Extract intrinsics from K matrix
-    fx, fy = K[0, 0], K[1, 1]
-    cx, cy = K[0, 2], K[1, 2]
-
-    # Log the pinhole camera
+    # --- Log Camera ---
     rr.log(
         "world/camera",
         rr.Pinhole(
             focal_length=[fx, fy],
             principal_point=[cx, cy],
             resolution=[width, height],
-            camera_xyz=rr.ViewCoordinates.RDF,  # Right-Down-Forward (OpenCV convention)
+            camera_xyz=rr.ViewCoordinates.RDF,
             image_plane_distance=3.0,
         ),
     )
-
-    # Log the original and masked images under the camera
-    rr.log("/image", rr.Image(image[..., :3]))
-    mask_bool = mask.astype(bool)
-    masked_rgb = image[..., :3].copy()
-    masked_rgb[~mask_bool] = 0
-    rr.log("world/camera/masked_image", rr.Image(masked_rgb))
     print(f"Camera intrinsics: fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
 
-    # Load and transform mesh
-    if os.path.exists(scene_glb_path):
-        loaded = trimesh.load(scene_glb_path)
-        if isinstance(loaded, trimesh.Scene):
-            meshes = list(loaded.geometry.values())
-        else:
-            meshes = [loaded]
+    # --- Log Images ---
+    rr.log("/image", rr.Image(image[..., :3]))
 
-        all_vertices = []
-        all_faces = []
-        all_colors = []
-        vertex_offset = 0
+    masked_rgb = image[..., :3].copy()
+    masked_rgb[~mask.astype(bool)] = 0
+    rr.log("world/camera/masked_image", rr.Image(masked_rgb))
 
-        for mesh in meshes:
-            # Apply o2c transform to vertices
-            vertices_h = np.hstack([mesh.vertices, np.ones((len(mesh.vertices), 1))])
-            transformed_vertices = (o2c @ vertices_h.T).T[:, :3]
+    # --- Log Mesh and Point Cloud ---
+    mesh_data = _load_and_transform_mesh(scene_glb_path, o2c)
+    if mesh_data is not None:
+        vertices, faces, colors = mesh_data
 
-            all_vertices.append(transformed_vertices)
-            all_faces.append(mesh.faces + vertex_offset)
-            vertex_offset += len(mesh.vertices)
+        rr.log(
+            "world/scene_mesh",
+            rr.Mesh3D(
+                vertex_positions=vertices,
+                triangle_indices=faces,
+                vertex_colors=colors,
+            ),
+        )
 
-            if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
-                all_colors.append(mesh.visual.vertex_colors[:, :3])
-            else:
-                all_colors.append(np.full((len(mesh.vertices), 3), 128, dtype=np.uint8))
-
-        if all_vertices:
-            combined_vertices = np.vstack(all_vertices)
-            combined_faces = np.vstack(all_faces)
-            combined_colors = np.vstack(all_colors)
-
-            rr.log(
-                "world/scene_mesh",
-                rr.Mesh3D(
-                    vertex_positions=combined_vertices,
-                    triangle_indices=combined_faces,
-                    vertex_colors=combined_colors,
-                ),
-            )
-
-            # Log point cloud with blue color
-            num_points = min(50000, len(combined_vertices))
-            indices = np.random.choice(len(combined_vertices), num_points, replace=False)
-            sampled_vertices = combined_vertices[indices]
-            rr.log(
-                "world/scene_pc",
-                rr.Points3D(
-                    positions=sampled_vertices,
-                    colors=np.full((num_points, 3), [0, 100, 255], dtype=np.uint8),
-                    radii=0.0003,
-                ),
-            )
+        # Subsample vertices for point cloud visualization
+        num_points = min(50000, len(vertices))
+        indices = np.random.choice(len(vertices), num_points, replace=False)
+        rr.log(
+            "world/scene_pc",
+            rr.Points3D(
+                positions=vertices[indices],
+                colors=np.full((num_points, 3), [0, 100, 255], dtype=np.uint8),
+                radii=0.0003,
+            ),
+        )
 
     print("Rerun visualization started. Check your browser or rerun viewer.")
 
