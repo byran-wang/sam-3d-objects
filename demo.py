@@ -256,13 +256,15 @@ def convert_pointmap_to_pytorch3d(pointmap):
     return pointmap
 
 
-def load_pointmap_from_depth(depth_file, K):
+def load_pointmap_from_depth(depth_file, K, thresh_min=0.01, thresh_max=1.5):
     """Load depth and convert to pointmap using intrinsics K."""
     # Load depth
     depth = get_depth(depth_file)
 
     # Convert depth to pointmap (H, W, 3)
     pointmap = depth2xyzmap(depth, K)
+    # if the depth of pointmap is less than thresh_min and greater than thresh_max meter set to nan
+    pointmap[(pointmap[..., 2] <= thresh_min) | (pointmap[..., 2] >= thresh_max)] = np.nan
 
     # Flip x and y axis to comply with pytorch3d camera coordinate system
     pointmap = convert_pointmap_to_pytorch3d(pointmap)
