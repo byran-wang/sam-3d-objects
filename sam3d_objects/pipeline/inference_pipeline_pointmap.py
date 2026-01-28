@@ -351,14 +351,14 @@ class InferencePipelinePointMap(InferencePipeline):
                     mode="nearest",
                 ).squeeze(0).permute(1, 2, 0)
         
-        debug_path = save_pointmap_ply(
-            points_tensor,
-            "./debug_pointmap",
-            "pointmap_hw3.ply",
-            points_are_chw=False,
-        )
-        logger.info(f"Saved pointmap debug point cloud to {debug_path}")
-        
+        # debug_path = save_pointmap_ply(
+        #     points_tensor,
+        #     "./debug_pointmap",
+        #     "pointmap_hw3.ply",
+        #     points_are_chw=False,
+        # )
+        # logger.info(f"Saved pointmap debug point cloud to {debug_path}")
+
         # Prepare the point map tensor
         point_map_tensor = {
             "pts_color": loaded_image,

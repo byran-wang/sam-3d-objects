@@ -118,7 +118,7 @@ def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path):
                 rr.Points3D(
                     positions=sampled_vertices,
                     colors=np.full((num_points, 3), [0, 100, 255], dtype=np.uint8),
-                    radii=0.001,
+                    radii=0.0003,
                 ),
             )
 
@@ -132,6 +132,64 @@ def save_rgba_with_mask(image, mask, output_path):
     else:
         rgba = np.dstack([image, alpha])
     Image.fromarray(rgba).save(output_path)
+
+
+def render_mesh_depth(
+    scene_mesh,
+    o2c: np.ndarray,
+    K: np.ndarray,
+    height: int,
+    width: int,
+    device: torch.device,
+) -> np.ndarray:
+    """Render depth map from a mesh using PyTorch3D rasterization.
+
+    Args:
+        scene_mesh: trimesh mesh object
+        o2c: 4x4 object-to-camera transform matrix
+        K: 3x3 camera intrinsics matrix
+        height: image height
+        width: image width
+        device: torch device
+
+    Returns:
+        depth: HxW numpy array of depth values
+    """
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    # Convert trimesh to pytorch3d Meshes
+    verts = torch.from_numpy(scene_mesh.vertices.astype(np.float32)).to(device)
+    faces = torch.from_numpy(scene_mesh.faces.astype(np.int64)).to(device)
+
+    # Apply o2c transform to vertices
+    verts_h = torch.cat([verts, torch.ones(verts.shape[0], 1, device=device)], dim=1)
+    o2c_tensor = torch.from_numpy(o2c.astype(np.float32)).to(device)
+    verts_cam = (o2c_tensor @ verts_h.T).T[:, :3]
+
+    mesh = Meshes(verts=[verts_cam], faces=[faces])
+
+    # Set up camera (identity since vertices are already in camera space)
+    cameras = PerspectiveCameras(
+        focal_length=torch.tensor([[fx, fy]], dtype=torch.float32, device=device),
+        principal_point=torch.tensor([[cx, cy]], dtype=torch.float32, device=device),
+        image_size=torch.tensor([[height, width]], dtype=torch.float32, device=device),
+        in_ndc=False,
+        device=device,
+    )
+
+    raster_settings = RasterizationSettings(
+        image_size=(height, width),
+        blur_radius=0.0,
+        faces_per_pixel=1,
+    )
+
+    rasterizer = MeshRasterizer(cameras=cameras, raster_settings=raster_settings)
+    fragments = rasterizer(mesh)
+    depth = fragments.zbuf[0, ..., 0].cpu().numpy()
+
+    return depth
+
 
 import pickle
 
@@ -168,6 +226,13 @@ def load_pointmap_and_intrinsics(depth_file, meta_file):
     return pointmap, K, K_normalized
 
 
+def convert_pointmap_to_pytorch3d(pointmap):
+    """Flip x and y axis to comply with pytorch3d camera coordinate system."""
+    pointmap[..., 0] = -pointmap[..., 0]
+    pointmap[..., 1] = -pointmap[..., 1]
+    return pointmap
+
+
 def load_pointmap_from_depth(depth_file, K):
     """Load depth and convert to pointmap using intrinsics K."""
     # Load depth
@@ -177,8 +242,7 @@ def load_pointmap_from_depth(depth_file, K):
     pointmap = depth2xyzmap(depth, K)
 
     # Flip x and y axis to comply with pytorch3d camera coordinate system
-    pointmap[..., 0] = -pointmap[..., 0]
-    pointmap[..., 1] = -pointmap[..., 1]
+    pointmap = convert_pointmap_to_pytorch3d(pointmap)
 
     # Convert to torch tensor
     pointmap = torch.from_numpy(pointmap).float()
@@ -280,36 +344,7 @@ def main(args):
 
         # Render depth with MeshRasterizer
         device = output["rotation"].device
-
-        # Convert trimesh to pytorch3d Meshes
-        verts = torch.from_numpy(scene_mesh.vertices.astype(np.float32)).to(device)
-        faces = torch.from_numpy(scene_mesh.faces.astype(np.int64)).to(device)
-
-        # Apply o2c transform to vertices
-        verts_h = torch.cat([verts, torch.ones(verts.shape[0], 1, device=device)], dim=1)
-        o2c_tensor = torch.from_numpy(o2c.astype(np.float32)).to(device)
-        verts_cam = (o2c_tensor @ verts_h.T).T[:, :3]
-
-        mesh = Meshes(verts=[verts_cam], faces=[faces])
-
-        # Set up camera (identity since vertices are already in camera space)
-        cameras = PerspectiveCameras(
-            focal_length=torch.tensor([[fx, fy]], dtype=torch.float32, device=device),
-            principal_point=torch.tensor([[cx, cy]], dtype=torch.float32, device=device),
-            image_size=torch.tensor([[height, width]], dtype=torch.float32, device=device),
-            in_ndc=False,
-            device=device
-        )
-
-        raster_settings = RasterizationSettings(
-            image_size=(height, width),
-            blur_radius=0.0,
-            faces_per_pixel=1,
-        )
-
-        rasterizer = MeshRasterizer(cameras=cameras, raster_settings=raster_settings)
-        fragments = rasterizer(mesh)
-        depth = fragments.zbuf[0, ..., 0].cpu().numpy()
+        depth = render_mesh_depth(scene_mesh, o2c, K, height, width, device)
 
         # Save depth
         save_depth(depth, os.path.join(out_dir, "depth.png"))
