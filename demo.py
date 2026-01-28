@@ -16,8 +16,8 @@ from pytorch3d.renderer import MeshRasterizer, RasterizationSettings, Perspectiv
 from pytorch3d.structures import Meshes
 
 
-def visualize_in_rerun(image, camera_json_path, scene_glb_path):
-    """Visualize input image, camera intrinsics, and mesh in rerun."""
+def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path):
+    """Visualize input image, masked image, camera intrinsics, and mesh in rerun."""
     import rerun as rr
     import rerun.blueprint as rrb
     import trimesh
@@ -28,11 +28,14 @@ def visualize_in_rerun(image, camera_json_path, scene_glb_path):
     K = np.array(camera_data["K"], dtype=np.float32)
     o2c = np.array(camera_data["blw2cvc"], dtype=np.float32)
 
-    # Set up blueprint with 3D view and 2D image view side by side
+    # Set up blueprint with 3D view and two 2D views side by side
     blueprint = rrb.Horizontal(
+        rrb.Vertical(
+            rrb.Spatial2DView(name="Camera Image", origin="/image"),
+            rrb.Spatial2DView(name="Masked Image", origin="world/camera/masked_image"),
+        ),
         rrb.Spatial3DView(name="3D Scene", origin="world"),
-        rrb.Spatial2DView(name="Camera Image", origin="world/camera"),
-        column_shares=[2, 1],
+        column_shares=[1, 2],
     )
 
     rr.init("sam3d_demo", spawn=True)
@@ -57,8 +60,12 @@ def visualize_in_rerun(image, camera_json_path, scene_glb_path):
         ),
     )
 
-    # Log the image under the camera
-    rr.log("world/camera/image", rr.Image(image[..., :3]))
+    # Log the original and masked images under the camera
+    rr.log("/image", rr.Image(image[..., :3]))
+    mask_bool = mask.astype(bool)
+    masked_rgb = image[..., :3].copy()
+    masked_rgb[~mask_bool] = 0
+    rr.log("world/camera/masked_image", rr.Image(masked_rgb))
     print(f"Camera intrinsics: fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
 
     # Load and transform mesh
@@ -144,7 +151,7 @@ def main(args):
             print(f"Visualization requires camera.json and scene.glb in {out_dir}.")
             print("Run without --vis first to generate outputs.")
             return
-        visualize_in_rerun(image, camera_json_path, scene_glb_path)
+        visualize_in_rerun(image, mask, camera_json_path, scene_glb_path)
         return
 
     os.makedirs(out_dir, exist_ok=True)
