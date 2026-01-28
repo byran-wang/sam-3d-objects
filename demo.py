@@ -11,7 +11,7 @@ from PIL import Image
 import torch
 from pytorch3d.transforms import quaternion_to_matrix
 from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
-from third_party.utils_simba.utils_simba.depth import save_depth
+from third_party.utils_simba.utils_simba.depth import save_depth, get_depth, depth2xyzmap
 from pytorch3d.renderer import MeshRasterizer, RasterizationSettings, PerspectiveCameras
 from pytorch3d.structures import Meshes
 
@@ -133,8 +133,32 @@ def save_rgba_with_mask(image, mask, output_path):
         rgba = np.dstack([image, alpha])
     Image.fromarray(rgba).save(output_path)
 
+import pickle
+
+
+def load_intrinsics(meta_file):
+    """Load camera intrinsics from meta pickle file."""
+    with open(meta_file, "rb") as f:
+        meta_data = pickle.load(f)
+    return np.array(meta_data["camMat"], dtype=np.float32)
+
+
+def load_pointmap_from_depth(depth_file, K):
+    """Load depth and convert to pointmap using intrinsics K."""
+    # Load depth
+    depth = get_depth(depth_file)
+
+    # Convert depth to pointmap (H, W, 3)
+    pointmap = depth2xyzmap(depth, K)
+
+    # Convert to torch tensor
+    pointmap = torch.from_numpy(pointmap).float()
+
+    return pointmap
+
+
 def main(args):
-    image_path = args.image_path 
+    image_path = args.image_path
     mask_path = args.mask_path
     out_dir = args.out_dir
     if not os.path.exists(image_path) or not os.path.exists(mask_path):
@@ -154,6 +178,21 @@ def main(args):
         visualize_in_rerun(image, mask, camera_json_path, scene_glb_path)
         return
 
+    # Load pointmap from depth if provided
+    pointmap = None
+    if args.depth_file and args.meta_file:
+        if not os.path.exists(args.depth_file):
+            print(f"Depth file {args.depth_file} not found.")
+            return
+        if not os.path.exists(args.meta_file):
+            print(f"Meta file {args.meta_file} not found.")
+            return
+        print(f"Loading pointmap from depth: {args.depth_file}")
+        print(f"Using intrinsics from: {args.meta_file}")
+        K_input = load_intrinsics(args.meta_file)
+        pointmap = load_pointmap_from_depth(args.depth_file, K_input)
+        print(f"Pointmap shape: {pointmap.shape}")
+
     os.makedirs(out_dir, exist_ok=True)
     save_rgba_with_mask(image, mask, os.path.join(out_dir, "input.png"))
     
@@ -162,7 +201,7 @@ def main(args):
     tag = "hf"
     config_path = f"checkpoints/{tag}/pipeline.yaml"
     inference = Inference(config_path, compile=False)
-    outputs = [inference(image, mask, seed=42)]
+    outputs = [inference(image, mask, seed=42, pointmap=pointmap)]
 
     # Save o2c transforms to out_dir
     assert len(outputs) == 1, "Only single object inference is supported in demo.py"
@@ -271,6 +310,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Visualize outputs in rerun (requires existing camera.json and scene.glb in out-dir).",
     )
-    
+    parser.add_argument(
+        "--depth-file",
+        type=str,
+        default=None,
+        help="Path to the depth file (PNG encoded). If provided with --meta-file, uses this instead of depth model.",
+    )
+    parser.add_argument(
+        "--meta-file",
+        type=str,
+        default=None,
+        help="Path to the meta pickle file containing intrinsics (camMat key). Required with --depth-file.",
+    )
+
     args = parser.parse_args()
     main(args)
