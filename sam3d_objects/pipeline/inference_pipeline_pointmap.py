@@ -395,6 +395,8 @@ class InferencePipelinePointMap(InferencePipeline):
 
     @torch.autograd.grad_mode.inference_mode(mode=False)
     def run_post_optimization(self, mesh_glb, intrinsics, pose_dict, layout_input_dict):
+        if isinstance(intrinsics, np.ndarray):
+            intrinsics = torch.from_numpy(intrinsics).to(self.device)
         intrinsics = intrinsics.clone()
         fx, fy = intrinsics[0, 0], intrinsics[1, 1]
         re_focal = min(fx, fy)
@@ -425,6 +427,8 @@ class InferencePipelinePointMap(InferencePipeline):
 
     @torch.autograd.grad_mode.inference_mode(mode=False)
     def run_post_optimization_GS(self, gs_input, intrinsics, pose_dict, layout_input_dict, backend="gsplat"):
+        if isinstance(intrinsics, np.ndarray):
+            intrinsics = torch.from_numpy(intrinsics).to(self.device)
         intrinsics = intrinsics.clone()
         fx, fy = intrinsics[0, 0], intrinsics[1, 1]
         re_focal = min(fx, fy)

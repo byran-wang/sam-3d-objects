@@ -114,7 +114,7 @@ class Inference:
             stage1_only=False,
             with_mesh_postprocess=False,
             with_texture_baking=False,
-            with_layout_postprocess=False,
+            with_layout_postprocess=True,
             use_vertex_color=True,
             stage1_inference_steps=None,
             pointmap=pointmap,
