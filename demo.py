@@ -176,6 +176,10 @@ def load_pointmap_from_depth(depth_file, K):
     # Convert depth to pointmap (H, W, 3)
     pointmap = depth2xyzmap(depth, K)
 
+    # Flip x and y axis to comply with pytorch3d camera coordinate system
+    pointmap[..., 0] = -pointmap[..., 0]
+    pointmap[..., 1] = -pointmap[..., 1]
+
     # Convert to torch tensor
     pointmap = torch.from_numpy(pointmap).float()
 
