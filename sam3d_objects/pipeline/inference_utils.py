@@ -358,7 +358,7 @@ def layout_post_optimization_method_GS(
     # Step 2: Shape ICP
     if Enable_shape_ICP and source_points is not None and target_points is not None:
         points_aligned_icp, transformation = run_gs_ICP(
-            source_points, target_points, threshold=0.05
+            source_points, target_points, threshold=0.02
         )
         gaussian_ICP = copy_and_update_gaussian_positions(
             gaussian_aligned, points_aligned_icp
