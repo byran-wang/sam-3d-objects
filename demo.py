@@ -104,7 +104,7 @@ def visualize_in_rerun(image, mask, camera_json_path, scene_glb_path, pointmap=N
         rrb.Spatial3DView(name="3D Scene", origin="world"),
         column_shares=[1, 2],
     )
-    rr.init("sam3d_demo", spawn=True)
+    rr.init("sam3d", spawn=True)
     rr.send_blueprint(blueprint)
 
     # --- Log Camera ---
