@@ -447,7 +447,7 @@ class InferencePipelinePointMap(InferencePipeline):
                 Enable_occlusion_check=False,
                 Enable_manual_alignment=False,
                 Enable_shape_ICP=False,
-                Enable_rendering_optimization=True,
+                Enable_rendering_optimization=False,
                 min_size=518,
                 device=self.device,
                 backend=backend,
