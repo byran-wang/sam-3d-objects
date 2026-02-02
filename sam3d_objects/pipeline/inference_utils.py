@@ -104,9 +104,22 @@ def layout_post_optimization(
     center = translation[0].clone()
     tfm_ori = compose_transform(scale=scale, rotation=Rotation, translation=translation)
     mesh, faces_idx, textures = get_mesh(Mesh, tfm_ori, device)
-
-    # Setup renderer
+    # Setup renderer (this resizes the mask)
+    orig_h, orig_w = mask.shape[-2:]
     mask, renderer = get_mask_renderer(mask, min_size, intrinsics, device)
+
+    # Resize point_map to match the resized mask
+    new_h, new_w = mask.shape[-2:]
+    if (orig_h, orig_w) != (new_h, new_w):
+        # point_map is (H, W, 3), need to permute for interpolation
+        point_map_resized = torch.nn.functional.interpolate(
+            point_map.permute(2, 0, 1).unsqueeze(0),  # (1, 3, H, W)
+            size=(new_h, new_w),
+            mode="bilinear",
+            align_corners=False,
+        )
+        point_map = point_map_resized.squeeze(0).permute(1, 2, 0)  # (H, W, 3)
+
     logger.info(f"Loaded!")
 
     # Check occlusion
