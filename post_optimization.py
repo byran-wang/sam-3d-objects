@@ -5,6 +5,7 @@ import os
 import numpy as np
 import torch
 import argparse
+import trimesh
 
 sys.path.append("notebook")
 from inference import load_image, load_mask
@@ -17,21 +18,28 @@ from demo import (
     visualize_in_rerun,
 )
 from demo_scene import _GL_TO_CV, _R_ZUP_TO_YUP
-from sam3d_objects.model.backbone.tdfy_dit.representations.gaussian.gaussian_model import Gaussian
-from sam3d_objects.pipeline.inference_utils import layout_post_optimization_method_GS
+from sam3d_objects.pipeline.inference_utils import layout_post_optimization
 from pytorch3d.transforms import matrix_to_quaternion, Transform3d
 from sam3d_objects.data.dataset.tdfy.transforms_3d import decompose_transform
 
 
-def load_gaussian_from_ply(ply_path: str, device: str = "cuda") -> Gaussian:
-    """Load Gaussian splatting model from PLY file."""
-    gaussian = Gaussian(
-        aabb=[-1, -1, -1, 1, 1, 1],
-        sh_degree=0,
-        device=device,
-    )
-    gaussian.load_ply(ply_path)
-    return gaussian
+def load_mesh_from_glb(glb_path: str) -> trimesh.Trimesh:
+    """Load mesh from GLB file.
+
+    Returns:
+        Combined trimesh mesh from all geometries in the GLB file.
+    """
+    loaded = trimesh.load(glb_path)
+
+    if isinstance(loaded, trimesh.Scene):
+        # Combine all meshes in the scene
+        meshes = list(loaded.geometry.values())
+        if len(meshes) == 1:
+            return meshes[0]
+        else:
+            return trimesh.util.concatenate(meshes)
+    else:
+        return loaded
 
 
 def decompose_o2c_to_pose(o2c: np.ndarray, device: str = "cuda"):
@@ -89,13 +97,13 @@ def main(args):
 
     # Check demo.py outputs
     camera_json_path = os.path.join(args.demo_out_dir, "camera.json")
-    scene_ply_path = os.path.join(args.demo_out_dir, "scene.ply")
+    scene_glb_path = os.path.join(args.demo_out_dir, "scene.glb")
 
     if not os.path.exists(camera_json_path):
         print(f"camera.json not found in {args.demo_out_dir}. Run demo.py first.")
         return
-    if not os.path.exists(scene_ply_path):
-        print(f"scene.ply not found in {args.demo_out_dir}. Run demo.py with gaussian output first.")
+    if not os.path.exists(scene_glb_path):
+        print(f"scene.glb not found in {args.demo_out_dir}. Run demo.py first.")
         return
 
     # --- Load image, mask ---
@@ -117,9 +125,10 @@ def main(args):
     print(f"Loading camera data from: {camera_json_path}")
     K_camera, o2c = _load_camera_data(camera_json_path)
 
-    # --- Load Gaussian from PLY ---
-    print(f"Loading Gaussian from: {scene_ply_path}")
-    gaussian = load_gaussian_from_ply(scene_ply_path, device=device)
+    # --- Load mesh from GLB ---
+    print(f"Loading mesh from: {scene_glb_path}")
+    mesh = load_mesh_from_glb(scene_glb_path)
+    print(f"Mesh vertices: {len(mesh.vertices)}, faces: {len(mesh.faces)}")
 
     # --- Decompose o2c to get initial pose parameters ---
     print("Decomposing initial pose...")
@@ -129,11 +138,8 @@ def main(args):
     print(f"Initial scale: {scale.squeeze()}")
 
     # --- Prepare inputs for post-optimization ---
-    # Convert mask to tensor (H, W) -> for layout_post_optimization_method_GS
+    # Convert mask to tensor (H, W)
     mask_tensor = torch.from_numpy(mask.astype(np.float32)).to(device)
-
-    # Convert image to tensor (3, H, W) for RGB supervision
-    rgb_gt = torch.from_numpy(image[..., :3].transpose(2, 0, 1).astype(np.float32) / 255.0).to(device)
 
     # Pointmap is already a tensor (H, W, 3)
     pointmap_tensor = pointmap.to(device)
@@ -149,26 +155,23 @@ def main(args):
         pointmap_vis = convert_pointmap_to_pytorch3d(pointmap.numpy().copy())
         visualize_in_rerun(
             image, mask, camera_json_path,
-            os.path.join(args.demo_out_dir, "scene.glb"),
+            scene_glb_path,
             pointmap=pointmap_vis
         )
         return
 
     print("Running post-optimization...")
-    result = layout_post_optimization_method_GS(
-        gaussian=gaussian,
+    result = layout_post_optimization(
+        Mesh=mesh,
         quaternion=quaternion,
         translation=translation,
         scale=scale,
         mask=mask_tensor,
-        rgb_gt=rgb_gt,
         point_map=pointmap_tensor,
         intrinsics=intrinsics_tensor,
-        Enable_occlusion_check=args.enable_occlusion_check,
-        Enable_manual_alignment=args.enable_manual_alignment,
         Enable_shape_ICP=args.enable_shape_icp,
         Enable_rendering_optimization=args.enable_rendering_optimization,
-        min_size=512,
+        min_size=image.shape[0],
         device=device,
     )
 
@@ -177,14 +180,12 @@ def main(args):
         optimized_quaternion,
         optimized_translation,
         optimized_scale,
-        initial_iou,
         final_iou,
         flag_manual,
         flag_icp,
     ) = result
 
     print(f"\n=== Post-optimization Results ===")
-    print(f"Initial IoU: {initial_iou:.4f}")
     print(f"Final IoU: {final_iou:.4f}")
     print(f"Manual alignment applied: {flag_manual}")
     print(f"ICP applied: {flag_icp}")
@@ -207,18 +208,26 @@ def main(args):
     )
     transform_matrix = l2c_transform.get_matrix()[0].cpu().numpy().T
     o2c_optimized = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
-
     # Save optimized camera.json
     camera_data_optimized = {
         "K": K.tolist(),
         "blw2cvc": o2c_optimized.tolist(),
-        "initial_iou": initial_iou,
         "final_iou": final_iou,
     }
     optimized_camera_path = os.path.join(args.out_dir, "camera_optimized.json")
     with open(optimized_camera_path, "w") as f:
         json.dump(camera_data_optimized, f, indent=2)
     print(f"Saved optimized camera to: {optimized_camera_path}")
+
+    # Visualize optimized result in rerun
+    print("Visualizing optimized result in rerun...")
+    # Flip pointmap for visualization (reverse pytorch3d coords)
+    pointmap_vis = convert_pointmap_to_pytorch3d(pointmap.numpy().copy())
+    visualize_in_rerun(
+        image, mask, optimized_camera_path,
+        scene_glb_path,
+        pointmap=pointmap_vis
+    )
 
 
 if __name__ == "__main__":
@@ -251,7 +260,7 @@ if __name__ == "__main__":
         "--demo-out-dir",
         type=str,
         required=True,
-        help="Directory containing demo.py outputs (camera.json, scene.ply).",
+        help="Directory containing demo.py outputs (camera.json, scene.glb).",
     )
     parser.add_argument(
         "--out-dir",
@@ -265,19 +274,10 @@ if __name__ == "__main__":
         help="Visualize in rerun instead of running optimization.",
     )
     parser.add_argument(
-        "--enable-occlusion-check",
-        action="store_true",
-        help="Enable occlusion checking.",
-    )
-    parser.add_argument(
-        "--enable-manual-alignment",
-        action="store_true",
-        help="Enable manual alignment step.",
-    )
-    parser.add_argument(
         "--enable-shape-icp",
         action="store_true",
-        help="Enable shape ICP step.",
+        default=False,
+        help="Enable shape ICP step (default: False).",
     )
     parser.add_argument(
         "--enable-rendering-optimization",
