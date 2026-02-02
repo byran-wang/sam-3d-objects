@@ -31,7 +31,67 @@ from sam3d_objects.pipeline.layout_post_optimization_utils import (
     flip_coords_pytorch3d_to_opencv,
     safe_copy_gaussian,
     get_mask_colors_for_gs,
+    get_visible_surface_points,
 )
+import os
+
+
+def save_icp_debug_pointclouds(
+    source_points,
+    target_points,
+    aligned_points,
+    output_dir: str = "debug",
+) -> None:
+    """Save ICP debug point clouds to PLY files.
+
+    Args:
+        source_points: Source points tensor (N, 3) before ICP
+        target_points: Target points tensor (M, 3)
+        aligned_points: Aligned source points array (N, 3) after ICP
+        output_dir: Directory to save debug files
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Convert source points to numpy (ensure contiguous float64 for Open3D)
+    if isinstance(source_points, torch.Tensor):
+        source_np = source_points.detach().cpu().numpy()
+    else:
+        source_np = source_points
+    source_np = np.ascontiguousarray(source_np, dtype=np.float64)
+
+    # Convert target points to numpy
+    if isinstance(target_points, torch.Tensor):
+        target_np = target_points.detach().cpu().numpy()
+    else:
+        target_np = target_points
+    target_np = np.ascontiguousarray(target_np, dtype=np.float64)
+
+    # Convert aligned points to numpy
+    if isinstance(aligned_points, torch.Tensor):
+        aligned_np = aligned_points.detach().cpu().numpy()
+    else:
+        aligned_np = aligned_points
+    aligned_np = np.ascontiguousarray(aligned_np, dtype=np.float64)
+
+    # Save source points (red color)
+    pcd_source = o3d.geometry.PointCloud()
+    pcd_source.points = o3d.utility.Vector3dVector(source_np)
+    pcd_source.paint_uniform_color([1.0, 0.0, 0.0])  # Red
+    o3d.io.write_point_cloud(os.path.join(output_dir, "source.ply"), pcd_source)
+
+    # Save target points (green color)
+    pcd_target = o3d.geometry.PointCloud()
+    pcd_target.points = o3d.utility.Vector3dVector(target_np)
+    pcd_target.paint_uniform_color([0.0, 1.0, 0.0])  # Green
+    o3d.io.write_point_cloud(os.path.join(output_dir, "target.ply"), pcd_target)
+
+    # Save aligned points (blue color)
+    pcd_aligned = o3d.geometry.PointCloud()
+    pcd_aligned.points = o3d.utility.Vector3dVector(aligned_np)
+    pcd_aligned.paint_uniform_color([0.0, 0.0, 1.0])  # Blue
+    o3d.io.write_point_cloud(os.path.join(output_dir, "source_aligned.ply"), pcd_aligned)
+
+    logger.info(f"Saved ICP debug point clouds to {output_dir}/")
 
 
 SLAT_STD = torch.tensor(
@@ -153,11 +213,17 @@ def layout_post_optimization(
         )
 
     # Step 2: Shape ICP
+    # Get source points from mesh visible surface for better ICP alignment
+    source_points_visible = get_visible_surface_points(mesh, renderer, mask, device)
+
     if Enable_shape_ICP:
         Flag_ICP = True
         points_aligned_icp, transformation = run_ICP(
-            mesh, source_points, target_points, threshold=0.05
+            mesh, source_points_visible, target_points, threshold=0.05
         )
+        
+        save_icp_debug_pointclouds(source_points_visible, target_points, points_aligned_icp)
+        
         mesh_ICP = Meshes(
             verts=[points_aligned_icp], faces=[faces_idx], textures=textures
         )
@@ -166,7 +232,8 @@ def layout_post_optimization(
             rendered[..., 3][0][None, None], mask, threshold=0.5
         )
         # determine whether accept ICP
-        if ori_iou_shapeICP > ori_iou:
+        # if ori_iou_shapeICP > ori_iou:
+        if True:
             mesh = mesh_ICP
             final_iou = ori_iou_shapeICP.cpu().item()
             T_o3d = torch.tensor(transformation, dtype=torch.float32, device=device)

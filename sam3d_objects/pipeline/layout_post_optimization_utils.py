@@ -387,6 +387,80 @@ def o3d_to_tensor(pcd):
     return torch.tensor(np.asarray(pcd.points), dtype=torch.float32)
 
 
+def get_visible_surface_points(mesh, renderer, mask, device, num_samples=10000):
+    """Get points from the visible surface of the mesh.
+
+    Uses rasterization to find which faces are visible from the camera viewpoint,
+    then samples points from those visible faces.
+
+    Args:
+        mesh: PyTorch3D Meshes object
+        renderer: MeshRenderer with rasterizer
+        mask: Target mask tensor (1, 1, H, W) to filter visible region
+        device: torch device
+        num_samples: Number of points to sample from visible surface
+
+    Returns:
+        visible_points: (N, 3) tensor of points on visible surface
+    """
+    # Get the rasterizer from renderer
+    rasterizer = renderer.rasterizer
+
+    # Rasterize to get fragments
+    fragments = rasterizer(mesh)
+
+    # Get visible face indices (first layer only, ignore -1 which means no face)
+    pix_to_face = fragments.pix_to_face[0, ..., 0]  # (H, W)
+
+    # Apply mask to only consider faces in the masked region
+    mask_2d = mask[0, 0].bool()  # (H, W)
+    visible_face_mask = (pix_to_face >= 0) & mask_2d
+
+    # Get unique visible face indices
+    visible_face_indices = pix_to_face[visible_face_mask].unique()
+    visible_face_indices = visible_face_indices[visible_face_indices >= 0]
+
+    if len(visible_face_indices) == 0:
+        return mesh.verts_packed()  # Fallback to all vertices
+
+    # Get vertices and faces
+    verts = mesh.verts_packed()  # (V, 3)
+    faces = mesh.faces_packed()  # (F, 3)
+
+    # Get visible faces
+    visible_faces = faces[visible_face_indices]  # (N_visible, 3)
+
+    # Sample points uniformly from visible faces using barycentric coordinates
+    num_visible_faces = len(visible_faces)
+
+    # Sample face indices (with replacement if needed)
+    if num_samples > num_visible_faces:
+        face_samples = torch.randint(0, num_visible_faces, (num_samples,), device=device)
+    else:
+        face_samples = torch.randperm(num_visible_faces, device=device)[:num_samples]
+
+    sampled_faces = visible_faces[face_samples]  # (num_samples, 3)
+
+    # Get vertices of sampled faces
+    v0 = verts[sampled_faces[:, 0]]  # (num_samples, 3)
+    v1 = verts[sampled_faces[:, 1]]
+    v2 = verts[sampled_faces[:, 2]]
+
+    # Generate random barycentric coordinates
+    r1 = torch.sqrt(torch.rand(num_samples, 1, device=device))
+    r2 = torch.rand(num_samples, 1, device=device)
+
+    # Barycentric to Cartesian
+    w0 = 1 - r1
+    w1 = r1 * (1 - r2)
+    w2 = r1 * r2
+
+    # Sample points on triangles
+    visible_points = w0 * v0 + w1 * v1 + w2 * v2
+
+    return visible_points
+
+
 def run_ICP(source_points_mesh, source_points, target_points, threshold):
     # Convert your point clouds
     mesh_src_pcd = tensor_to_o3d_pcd(source_points_mesh.verts_padded().squeeze(0))
