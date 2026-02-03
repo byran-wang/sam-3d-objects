@@ -292,6 +292,11 @@ def load_pointmap_and_intrinsics(depth_file, meta_file):
         K_normalized: normalized intrinsics for pipeline
     """
     K = load_intrinsics(meta_file)
+    if K.shape != (3, 3):
+        from pathlib import Path
+        K = load_intrinsics(Path(meta_file).parent / "0000.pkl")
+        if K.shape != (3, 3):
+            raise ValueError(f"Invalid intrinsics shape: {K.shape}")
     pointmap = load_pointmap_from_depth(depth_file, K)
     height, width = pointmap.shape[:2]
     K_normalized = normalize_intrinsics(K, height, width)
