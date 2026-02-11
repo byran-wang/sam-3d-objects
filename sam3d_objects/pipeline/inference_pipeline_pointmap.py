@@ -594,6 +594,10 @@ class InferencePipelinePointMap(InferencePipeline):
                 **outputs,
                 "pointmap": pts.cpu().permute((1, 2, 0)),  # HxWx3
                 "pointmap_colors": pts_colors.cpu().permute((1, 2, 0)),  # HxWx3
+                # Data for standalone post-optimization (avoids re-running preprocessing)
+                "_post_opt_mask": ss_input_dict["rgb_image_mask"],
+                "_post_opt_rgb": ss_input_dict["rgb_image"],
+                "_post_opt_pointmap_unnorm": ss_input_dict.get("rgb_pointmap_unnorm"),
             }
 
     @staticmethod

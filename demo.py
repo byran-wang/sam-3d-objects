@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 import sys
 import json
+from copy import deepcopy
 from demo_scene import make_scene_untextured_mesh_without_transform, _GL_TO_CV, _R_ZUP_TO_YUP
 # import inference code
 sys.path.append("notebook")
@@ -10,7 +11,7 @@ import numpy as np
 from PIL import Image
 import torch
 import imageio
-from pytorch3d.transforms import quaternion_to_matrix
+from pytorch3d.transforms import quaternion_to_matrix, matrix_to_quaternion, quaternion_multiply, quaternion_invert
 from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
 from third_party.utils_simba.utils_simba.depth import save_depth, get_depth, depth2xyzmap
 from pytorch3d.renderer import MeshRasterizer, RasterizationSettings, PerspectiveCameras
@@ -271,7 +272,7 @@ import pickle
 def render_novel_view(
     output,
     out_dir,
-    distance=2.0,
+    distance=1.0,
     hfov=60.0,
     elevation=30.0,
     azimuth=45.0,
@@ -340,6 +341,39 @@ def render_novel_view(
     output_path = os.path.join(out_dir, "rendered_novel_view.png")
     Image.fromarray(rgba_np, "RGBA").save(output_path)
     print(f"Saved rendered novel view ({resolution}x{resolution}) to {output_path}")
+
+
+def save_gaussian_and_turntable_gif(
+    gaussian,
+    out_dir: str,
+    ply_name: str,
+    gif_name: str,
+    message: str,
+    r: float = 1,
+    fov: float = 60,
+    pitch_deg: float = 15,
+    yaw_start_deg: float = -45,
+    resolution: int = 512,
+):
+    gaussian.save_ply(os.path.join(out_dir, ply_name))
+    gaussian = ready_gaussian_for_video_rendering(gaussian)
+    video = render_video(
+        gaussian,
+        r=r,
+        fov=fov,
+        pitch_deg=pitch_deg,
+        yaw_start_deg=yaw_start_deg,
+        resolution=resolution,
+    )["color"]
+    gif_path = os.path.join(out_dir, gif_name)
+    imageio.mimsave(
+        gif_path,
+        video,
+        format="GIF",
+        duration=1000 / 30,
+        loop=0,
+    )
+    print(f"{message} {gif_path}")
 
 
 def load_intrinsics(meta_file):
@@ -537,7 +571,7 @@ def main(args):
         render_novel_view(
             output,
             out_dir,
-            distance=2.0,
+            distance=1.0,
             hfov=60.0,
             elevation=30.0,
             azimuth=45.0,
@@ -546,6 +580,7 @@ def main(args):
 
         # Render gaussian splat turntable video
         scene_gs = make_scene(output)
+        scene_gs.save_ply(os.path.join(out_dir, "gaussian_scene.ply"))
         scene_gs = ready_gaussian_for_video_rendering(scene_gs)
         video = render_video(
             scene_gs,
@@ -555,7 +590,7 @@ def main(args):
             yaw_start_deg=-45,
             resolution=512,
         )["color"]
-        gif_path = os.path.join(out_dir, "turntable.gif")
+        gif_path = os.path.join(out_dir, "turntable_scene.gif")
         imageio.mimsave(
             gif_path,
             video,
@@ -565,6 +600,58 @@ def main(args):
         )
         print(f"Saved turntable GIF to {gif_path}")
 
+        # Save decoder space gaussian and render its turntable video
+        decoder_gs = deepcopy(output["gaussian"][0])
+        decoder_gs.save_ply(os.path.join(out_dir, "gaussian_decoder.ply"))
+        decoder_gs = ready_gaussian_for_video_rendering(decoder_gs)
+        video_dec = render_video(
+            decoder_gs,
+            r=1,
+            fov=60,
+            pitch_deg=15,
+            yaw_start_deg=-45,
+            resolution=512,
+        )["color"]
+        gif_dec_path = os.path.join(out_dir, "turntable_decoder.gif")
+        imageio.mimsave(
+            gif_dec_path,
+            video_dec,
+            format="GIF",
+            duration=1000 / 30,
+            loop=0,
+        )
+        print(f"Saved decoder space turntable GIF to {gif_dec_path}")
+
+        # Transform decoder space gaussian from Z-up to Y-up and render
+        decoder_gs_yup = deepcopy(output["gaussian"][0])
+        device = decoder_gs_yup.get_xyz.device
+        R_z2y = torch.tensor(_R_ZUP_TO_YUP[:3, :3], dtype=torch.float32, device=device)
+        q_z2y = matrix_to_quaternion(R_z2y.unsqueeze(0))  # (1, 4)
+        # Rotate positions (row-vector convention: p @ R)
+        decoder_gs_yup.from_xyz(decoder_gs_yup.get_xyz @ R_z2y)
+        # Rotate per-gaussian orientations (same pattern as make_scene)
+        decoder_gs_yup.from_rotation(
+            quaternion_multiply(quaternion_invert(q_z2y), decoder_gs_yup.get_rotation)
+        )
+        decoder_gs_yup.save_ply(os.path.join(out_dir, "gaussian_decoder_yup.ply"))
+        decoder_gs_yup = ready_gaussian_for_video_rendering(decoder_gs_yup)
+        video_yup = render_video(
+            decoder_gs_yup,
+            r=1,
+            fov=60,
+            pitch_deg=15,
+            yaw_start_deg=-45,
+            resolution=512,
+        )["color"]
+        gif_yup_path = os.path.join(out_dir, "turntable_decoder_yup.gif")
+        imageio.mimsave(
+            gif_yup_path,
+            video_yup,
+            format="GIF",
+            duration=1000 / 30,
+            loop=0,
+        )
+        print(f"Saved Y-up decoder space turntable GIF to {gif_yup_path}")
     else:
         # export gaussian splat
         outputs[0]["gs"].save_ply(f"{out_dir}/scene.ply")

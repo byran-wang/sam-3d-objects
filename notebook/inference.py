@@ -85,7 +85,7 @@ class Inference:
     def __init__(self, config_file: str, compile: bool = False):
         # load inference pipeline
         config = OmegaConf.load(config_file)
-        config.rendering_engine = "pytorch3d"  # overwrite to disable nvdiffrast
+        config.rendering_engine = "nvdiffrast"  # overwrite to disable nvdiffrast
         config.compile_model = compile
         config.workspace_dir = os.path.dirname(config_file)
         check_hydra_safety(config, WHITELIST_FILTERS, BLACKLIST_FILTERS)
