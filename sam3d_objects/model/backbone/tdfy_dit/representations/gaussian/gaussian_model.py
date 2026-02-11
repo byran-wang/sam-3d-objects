@@ -106,7 +106,7 @@ class Gaussian:
         )
 
     def from_scaling(self, scales):
-        scales = torch.sqrt(torch.square(scales) - self.mininum_kernel_size**2)
+        scales = torch.sqrt((torch.square(scales) - self.mininum_kernel_size**2).clamp(min=0.0))
         self._scaling = self.inverse_scaling_activation(scales) - self.scale_bias
 
     def from_rotation(self, rots):
