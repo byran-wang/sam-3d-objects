@@ -30,6 +30,7 @@ from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
 from pytorch3d.transforms import quaternion_to_matrix
 
 from demo_scene import _GL_TO_CV, _R_ZUP_TO_YUP
+from demo import render_novel_view, gaussian_zup_to_yup
 
 
 def main(args):
@@ -149,6 +150,27 @@ def main(args):
     result_path = os.path.join(args.out_dir, "post_opt_result.pt")
     torch.save(optimized, result_path)
     print(f"  Saved optimized pose to {result_path}")
+
+    # Render novel view with optimized pose
+    gs_fresh = Gaussian(**data["gaussian_init_params"], device=device)
+    gs_fresh.load_ply(gaussian_path)
+    gaussian_zup_to_yup(gs_fresh)
+    output_for_render = {
+        "gaussian": [gs_fresh],
+        "rotation": revised_quat,
+        "translation": revised_t,
+        "scale": revised_scale,
+    }
+    render_novel_view(
+        output_for_render,
+        args.out_dir,
+        filename="rendered_novel_view_post_opt.png",
+        distance=1.5,
+        hfov=50.0,
+        elevation=45.0,
+        azimuth=135.0,
+        resolution=512,       
+    )
 
 
 if __name__ == "__main__":
