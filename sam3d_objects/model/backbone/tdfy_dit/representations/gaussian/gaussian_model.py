@@ -241,7 +241,7 @@ class Gaussian:
         self._opacity = self.inverse_opacity_activation(opacities) - self.opacity_bias
         self._scaling = (
             self.inverse_scaling_activation(
-                torch.sqrt(torch.square(scales) - self.mininum_kernel_size**2)
+                torch.sqrt((torch.square(scales) - self.mininum_kernel_size**2).clamp(min=0.0))
             )
             - self.scale_bias
         )
