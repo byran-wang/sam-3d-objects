@@ -272,22 +272,28 @@ import pickle
 def render_novel_view(
     output,
     out_dir,
+    filename="rendered_novel_view.png",
     distance=1.0,
     hfov=60.0,
     elevation=30.0,
     azimuth=45.0,
     resolution=512,
+    gaussian=None,
 ):
     """Render a novel view RGBA image of the reconstructed object.
 
     Args:
         output: Full inference output dict (with gaussian, rotation, translation, scale).
+              Ignored if gaussian is provided.
         out_dir: Output directory to save the rendered image.
+        filename: Output filename.
         distance: Camera distance from object center.
         hfov: Horizontal field of view in degrees.
         elevation: Camera elevation angle in degrees.
         azimuth: Camera azimuth angle in degrees.
         resolution: Output image resolution (square).
+        gaussian: Pre-processed Gaussian object. If provided, skips make_scene
+                  and uses this directly (after normalization).
     """
     from inference import (
         _yaw_pitch_r_fov_to_extrinsics_intrinsics,
@@ -299,8 +305,11 @@ def render_novel_view(
     )
 
     # Apply pose transform then normalize (same as render_video path)
-    scene_gs = make_scene(output)
-    gs = ready_gaussian_for_video_rendering(scene_gs)
+    if gaussian is not None:
+        gs = ready_gaussian_for_video_rendering(gaussian)
+    else:
+        scene_gs = make_scene(output)
+        gs = ready_gaussian_for_video_rendering(scene_gs)
 
     # Set up orbit camera
     yaw_rad = math.radians(azimuth)
@@ -338,7 +347,7 @@ def render_novel_view(
         alpha = (np.any(color_np > 0, axis=2) * 255).astype(np.uint8)
         rgba_np = np.dstack([color_np, alpha])
 
-    output_path = os.path.join(out_dir, "rendered_novel_view.png")
+    output_path = os.path.join(out_dir, filename)
     Image.fromarray(rgba_np, "RGBA").save(output_path)
     print(f"Saved rendered novel view ({resolution}x{resolution}) to {output_path}")
 
@@ -614,6 +623,16 @@ def main(args):
             decoder_gs_yup, out_dir,
             "gaussian_decoder_yup.ply", "turntable_decoder_yup.gif",
             "Saved Y-up decoder space turntable GIF to",
+        )
+        render_novel_view(
+            None, out_dir,
+            filename="rendered_novel_view_yup.png",
+            distance=1.0,
+            hfov=60.0,
+            elevation=30.0,
+            azimuth=45.0,
+            resolution=512,
+            gaussian=decoder_gs_yup,
         )
 
     else:
