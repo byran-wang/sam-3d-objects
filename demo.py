@@ -4,11 +4,12 @@ import json
 from demo_scene import make_scene_untextured_mesh_without_transform, _GL_TO_CV, _R_ZUP_TO_YUP
 # import inference code
 sys.path.append("notebook")
-from inference import Inference, load_image, load_single_mask, load_mask
+from inference import Inference, load_image, load_single_mask, load_mask, make_scene, ready_gaussian_for_video_rendering, render_video
 import os
 import numpy as np
 from PIL import Image
 import torch
+import imageio
 from pytorch3d.transforms import quaternion_to_matrix
 from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
 from third_party.utils_simba.utils_simba.depth import save_depth, get_depth, depth2xyzmap
@@ -263,7 +264,82 @@ def render_mesh_depth(
     return depth
 
 
+import math
 import pickle
+
+
+def render_novel_view(
+    output,
+    out_dir,
+    distance=2.0,
+    hfov=60.0,
+    elevation=30.0,
+    azimuth=45.0,
+    resolution=512,
+):
+    """Render a novel view RGBA image of the reconstructed object.
+
+    Args:
+        output: Full inference output dict (with gaussian, rotation, translation, scale).
+        out_dir: Output directory to save the rendered image.
+        distance: Camera distance from object center.
+        hfov: Horizontal field of view in degrees.
+        elevation: Camera elevation angle in degrees.
+        azimuth: Camera azimuth angle in degrees.
+        resolution: Output image resolution (square).
+    """
+    from inference import (
+        _yaw_pitch_r_fov_to_extrinsics_intrinsics,
+        ready_gaussian_for_video_rendering,
+        make_scene,
+    )
+    from sam3d_objects.model.backbone.tdfy_dit.renderers.gaussian_render import (
+        GaussianRenderer,
+    )
+
+    # Apply pose transform then normalize (same as render_video path)
+    scene_gs = make_scene(output)
+    gs = ready_gaussian_for_video_rendering(scene_gs)
+
+    # Set up orbit camera
+    yaw_rad = math.radians(azimuth)
+    pitch_rad = math.radians(elevation)
+    extr, intr = _yaw_pitch_r_fov_to_extrinsics_intrinsics(
+        yaw_rad, pitch_rad, distance, hfov
+    )
+
+    # Render with gsplat backend (supports alpha output)
+    renderer = GaussianRenderer()
+    renderer.rendering_options.resolution = resolution
+    renderer.rendering_options.near = 0.8
+    renderer.rendering_options.far = 1.6
+    renderer.rendering_options.bg_color = (0, 0, 0)
+    renderer.rendering_options.ssaa = 1
+    renderer.rendering_options.backend = "gsplat"
+    renderer.pipe.kernel_size = 0.1
+    renderer.pipe.use_mip_gaussian = True
+
+    result = renderer.render(gs, extr, intr)
+
+    if "rgba" in result:
+        rgba_tensor = result["rgba"]  # (4, H, W), values in [0, 1]
+        rgba_np = (
+            np.clip(rgba_tensor.detach().cpu().numpy().transpose(1, 2, 0) * 255, 0, 255)
+            .astype(np.uint8)
+        )
+    else:
+        # Fallback: compose RGBA from color + binary alpha
+        color_tensor = result["color"]  # (3, H, W)
+        color_np = (
+            np.clip(color_tensor.detach().cpu().numpy().transpose(1, 2, 0) * 255, 0, 255)
+            .astype(np.uint8)
+        )
+        alpha = (np.any(color_np > 0, axis=2) * 255).astype(np.uint8)
+        rgba_np = np.dstack([color_np, alpha])
+
+    output_path = os.path.join(out_dir, "rendered_novel_view.png")
+    Image.fromarray(rgba_np, "RGBA").save(output_path)
+    print(f"Saved rendered novel view ({resolution}x{resolution}) to {output_path}")
 
 
 def load_intrinsics(meta_file):
@@ -387,6 +463,28 @@ def main(args):
     # Save o2c transforms to out_dir
     assert len(outputs) == 1, "Only single object inference is supported in demo.py"
     output = outputs[0]
+
+    # Save inference output for standalone post-optimization
+    output["gaussian"][0].save_ply(os.path.join(out_dir, "gaussian.ply"))
+    _intr = output["intrinsics"]
+    if isinstance(_intr, torch.Tensor):
+        _intr = _intr.cpu()
+    else:
+        _intr = torch.from_numpy(np.array(_intr, dtype=np.float32))
+    post_opt_data = {
+        "gaussian_init_params": output["gaussian"][0].init_params,
+        "rotation": output["rotation"].cpu(),
+        "translation": output["translation"].cpu(),
+        "scale": output["scale"].cpu(),
+        "intrinsics": _intr,
+        "mask": output["_post_opt_mask"].cpu(),
+        "rgb": output["_post_opt_rgb"].cpu(),
+        "pointmap_unnorm": output["_post_opt_pointmap_unnorm"].cpu()
+            if output.get("_post_opt_pointmap_unnorm") is not None else None,
+    }
+    torch.save(post_opt_data, os.path.join(out_dir, "post_opt_data.pt"))
+    print(f"Saved post-optimization data to {out_dir}/post_opt_data.pt")
+
     R_l2c = quaternion_to_matrix(output["rotation"])
     l2c_transform = compose_transform(
         scale=output["scale"],
@@ -434,6 +532,38 @@ def main(args):
         # Save depth
         save_depth(depth, os.path.join(out_dir, "depth.png"))
         print(f"Saved depth to {out_dir}/depth.png")
+
+        # Render novel view RGBA image
+        render_novel_view(
+            output,
+            out_dir,
+            distance=2.0,
+            hfov=60.0,
+            elevation=30.0,
+            azimuth=45.0,
+            resolution=512,
+        )
+
+        # Render gaussian splat turntable video
+        scene_gs = make_scene(output)
+        scene_gs = ready_gaussian_for_video_rendering(scene_gs)
+        video = render_video(
+            scene_gs,
+            r=1,
+            fov=60,
+            pitch_deg=15,
+            yaw_start_deg=-45,
+            resolution=512,
+        )["color"]
+        gif_path = os.path.join(out_dir, "turntable.gif")
+        imageio.mimsave(
+            gif_path,
+            video,
+            format="GIF",
+            duration=1000 / 30,
+            loop=0,
+        )
+        print(f"Saved turntable GIF to {gif_path}")
 
     else:
         # export gaussian splat
