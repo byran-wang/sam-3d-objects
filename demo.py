@@ -627,10 +627,10 @@ def main(args):
         render_novel_view(
             None, out_dir,
             filename="rendered_novel_view_yup.png",
-            distance=1.0,
+            distance=1.5,
             hfov=60.0,
-            elevation=30.0,
-            azimuth=45.0,
+            elevation=60.0,
+            azimuth=135.0,
             resolution=512,
             gaussian=decoder_gs_yup,
         )
