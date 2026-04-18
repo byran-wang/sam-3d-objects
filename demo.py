@@ -516,19 +516,21 @@ def process_frame(inference, image_path, mask_path, out_dir, depth_file=None, me
         _intr = _intr.cpu()
     else:
         _intr = torch.from_numpy(np.array(_intr, dtype=np.float32))
-    post_opt_data = {
-        "gaussian_init_params": output["gaussian"][0].init_params,
-        "rotation": output["rotation"].cpu(),
-        "translation": output["translation"].cpu(),
-        "scale": output["scale"].cpu(),
-        "intrinsics": _intr,
-        "mask": output["_post_opt_mask"].cpu(),
-        "rgb": output["_post_opt_rgb"].cpu(),
-        "pointmap_unnorm": output["_post_opt_pointmap_unnorm"].cpu()
-            if output.get("_post_opt_pointmap_unnorm") is not None else None,
-    }
-    torch.save(post_opt_data, os.path.join(out_dir, "post_opt_data.pt"))
-    print(f"Saved post-optimization data to {out_dir}/post_opt_data.pt")
+    
+    if 0:
+        post_opt_data = {
+            "gaussian_init_params": output["gaussian"][0].init_params,
+            "rotation": output["rotation"].cpu(),
+            "translation": output["translation"].cpu(),
+            "scale": output["scale"].cpu(),
+            "intrinsics": _intr,
+            "mask": output["_post_opt_mask"].cpu(),
+            "rgb": output["_post_opt_rgb"].cpu(),
+            "pointmap_unnorm": output["_post_opt_pointmap_unnorm"].cpu()
+                if output.get("_post_opt_pointmap_unnorm") is not None else None,
+        }
+        torch.save(post_opt_data, os.path.join(out_dir, "post_opt_data.pt"))
+        print(f"Saved post-optimization data to {out_dir}/post_opt_data.pt")
 
     R_l2c = quaternion_to_matrix(output["rotation"])
     l2c_transform = compose_transform(
@@ -607,23 +609,23 @@ def process_frame(inference, image_path, mask_path, out_dir, depth_file=None, me
                 "Saved decoder space turntable GIF to",
             )
 
-        # Transform decoder space gaussian from Z-up to Y-up and render
-        decoder_gs_yup = gaussian_zup_to_yup(deepcopy(output["gaussian"][0]))
-        save_gaussian_and_turntable_gif(
-            decoder_gs_yup, out_dir,
-            "gaussian_decoder_yup.ply", "turntable_decoder_yup.gif",
-            "Saved Y-up decoder space turntable GIF to",
-        )
-        render_novel_view(
-            None, out_dir,
-            filename="rendered_novel_view_yup.png",
-            distance=1.5,
-            hfov=50.0,
-            elevation=45.0,
-            azimuth=135.0,
-            resolution=512,   
-            gaussian=decoder_gs_yup,
-        )
+            # Transform decoder space gaussian from Z-up to Y-up and render
+            decoder_gs_yup = gaussian_zup_to_yup(deepcopy(output["gaussian"][0]))
+            save_gaussian_and_turntable_gif(
+                decoder_gs_yup, out_dir,
+                "gaussian_decoder_yup.ply", "turntable_decoder_yup.gif",
+                "Saved Y-up decoder space turntable GIF to",
+            )
+            render_novel_view(
+                None, out_dir,
+                filename="rendered_novel_view_yup.png",
+                distance=1.5,
+                hfov=50.0,
+                elevation=45.0,
+                azimuth=135.0,
+                resolution=512,   
+                gaussian=decoder_gs_yup,
+            )
 
     else:
         # export gaussian splat
