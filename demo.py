@@ -460,14 +460,11 @@ def load_pointmap_from_depth(depth_file, K, thresh_min=0.01, thresh_max=1.5):
     return pointmap
 
 
-def main(args):
-    image_path = args.image_path
-    mask_path = args.mask_path
-    out_dir = args.out_dir
+def process_frame(inference, image_path, mask_path, out_dir, depth_file=None, meta_file=None, vis=False):
     if not os.path.exists(image_path) or not os.path.exists(mask_path):
         print(f"Image {image_path} or mask {mask_path}  not found.")
         return
-    
+
     image = load_image(image_path)
     # mask = load_single_mask("notebook/images/shutterstock_stylish_kidsroom_1640806567", index=14)
     mask = load_mask(mask_path)
@@ -476,21 +473,21 @@ def main(args):
     pointmap = None
     K_input = None
     K_input_normalized = None
-    if args.depth_file and args.meta_file:
-        if not os.path.exists(args.depth_file):
-            print(f"Depth file {args.depth_file} not found.")
+    if depth_file and meta_file:
+        if not os.path.exists(depth_file):
+            print(f"Depth file {depth_file} not found.")
             return
-        if not os.path.exists(args.meta_file):
-            print(f"Meta file {args.meta_file} not found.")
+        if not os.path.exists(meta_file):
+            print(f"Meta file {meta_file} not found.")
             return
-        print(f"Loading pointmap from depth: {args.depth_file}")
-        print(f"Using intrinsics from: {args.meta_file}")
+        print(f"Loading pointmap from depth: {depth_file}")
+        print(f"Using intrinsics from: {meta_file}")
         pointmap, K_input, K_input_normalized = load_pointmap_and_intrinsics(
-            args.depth_file, args.meta_file
+            depth_file, meta_file
         )
         print(f"Pointmap shape: {pointmap.shape}")
-            
-    if args.vis:
+
+    if vis:
         camera_json_path = os.path.join(out_dir, "camera.json")
         scene_glb_path = os.path.join(out_dir, "scene.glb")
         if not os.path.exists(camera_json_path) or not os.path.exists(scene_glb_path):
@@ -503,16 +500,9 @@ def main(args):
         visualize_in_rerun(image, mask, camera_json_path, scene_glb_path, pointmap=pointmap)
         return
 
-
-
     os.makedirs(out_dir, exist_ok=True)
     save_rgba_with_mask(image, mask, os.path.join(out_dir, "input.png"))
-    
-    # display_image(image, mask, output_path=os.path.join(out_dir, f"{scene}_{index:04d}_inputs.png"))
-    # load model
-    tag = "hf"
-    config_path = f"checkpoints/{tag}/pipeline.yaml"
-    inference = Inference(config_path, compile=False)
+
     outputs = [inference(image, mask, seed=42, pointmap=pointmap, intrinsics=K_input_normalized)]
 
     # Save o2c transforms to out_dir
@@ -640,6 +630,45 @@ def main(args):
         outputs[0]["gs"].save_ply(f"{out_dir}/scene.ply")
         print(f"Your reconstruction has been saved to {out_dir}/scene.ply")
 
+
+def main(args):
+    if args.batch_file is not None:
+        with open(args.batch_file, "r") as f:
+            entries = json.load(f)
+        if not isinstance(entries, list) or len(entries) == 0:
+            print(f"Batch file {args.batch_file} must contain a non-empty JSON list.")
+            return
+    else:
+        if not args.image_path or not args.mask_path or not args.out_dir:
+            print("Either --batch-file or all of (--image-path, --mask-path, --out-dir) are required.")
+            return
+        entries = [{
+            "image_path": args.image_path,
+            "mask_path": args.mask_path,
+            "out_dir": args.out_dir,
+            "depth_file": args.depth_file,
+            "meta_file": args.meta_file,
+        }]
+
+    inference = None
+    if not args.vis:
+        tag = "hf"
+        config_path = f"checkpoints/{tag}/pipeline.yaml"
+        inference = Inference(config_path, compile=False)
+
+    for i, entry in enumerate(entries):
+        print(f"=== Processing frame {i + 1}/{len(entries)}: {entry.get('image_path')} ===")
+        process_frame(
+            inference,
+            image_path=entry["image_path"],
+            mask_path=entry["mask_path"],
+            out_dir=entry["out_dir"],
+            depth_file=entry.get("depth_file"),
+            meta_file=entry.get("meta_file"),
+            vis=args.vis,
+        )
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -647,20 +676,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--image-path",
         type=str,
-        required=True,
-        help="Path to the input RGBA image.",
+        default=None,
+        help="Path to the input RGBA image. Ignored if --batch-file is provided.",
     )
     parser.add_argument(
         "--mask-path",
         type=str,
-        required=True,
-        help="Path to the input mask image.",
+        default=None,
+        help="Path to the input mask image. Ignored if --batch-file is provided.",
     )
     parser.add_argument(
         "--out-dir",
         type=str,
-        required=True,
-        help="Directory to save outputs.",
+        default=None,
+        help="Directory to save outputs. Ignored if --batch-file is provided.",
     )
     parser.add_argument(
         "--vis",
@@ -678,6 +707,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to the meta pickle file containing intrinsics (camMat key). Required with --depth-file.",
+    )
+    parser.add_argument(
+        "--batch-file",
+        type=str,
+        default=None,
+        help="Path to a JSON file with a list of per-frame dicts: {image_path, mask_path, out_dir, depth_file?, meta_file?}. Loads the Inference model once and processes all frames in one invocation.",
     )
 
     args = parser.parse_args()
